@@ -44,7 +44,7 @@ class Introspection(Endpoint):
         if _info.get("revoked", False):
             return None
 
-        if _info.get("expires_at") < utc_time_sans_frac():
+        if _info["expires_at"] < utc_time_sans_frac():
             return None
 
         if _info:  # Now what can be returned ?
@@ -75,7 +75,6 @@ class Introspection(Endpoint):
         _token = _introspect_request["token"]
         _resp = self.response_cls(active=False)
 
-        # A non-jws access token
         _info = self.do_access_token(_token)
         if _info is None:
             return {"response_args": _resp}
