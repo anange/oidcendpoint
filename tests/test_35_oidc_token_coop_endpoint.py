@@ -109,7 +109,9 @@ class TestEndpoint(object):
                 "authorization": {
                     "path": "authorization",
                     "class": Authorization,
-                    "kwargs": {},
+                    "kwargs": {
+                        "grant_types_supported": CAPABILITIES["grant_types_supported"],
+                    },
                 },
                 "token": {
                     "path": "token",
@@ -322,7 +324,12 @@ class TestEndpoint(object):
         _req = self.endpoint.parse_request(_token_request)
         _resp = self.endpoint.process_request(request=_req)
 
-        self.endpoint.allow_refresh = False
+        # Disable refresh token grant_type
+        _cntx.provider_info['grant_types_supported'] = [
+            "authorization_code",
+            "implicit",
+            "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        ]
 
         _request = REFRESH_TOKEN_REQ.copy()
         _request["refresh_token"] = _resp["response_args"]["refresh_token"]

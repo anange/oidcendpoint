@@ -33,6 +33,11 @@ class TokenCoop(Endpoint):
     endpoint_name = "token_endpoint"
     name = "token"
     default_capabilities = {"token_endpoint_auth_signing_alg_values_supported": None}
+    token_grant_types = (
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:token-exchange",
+    )
 
     def __init__(self, endpoint_context, **kwargs):
         Endpoint.__init__(self, endpoint_context, **kwargs)
@@ -41,7 +46,6 @@ class TokenCoop(Endpoint):
             self.endpoint_info["token_endpoint_auth_methods_supported"] = kwargs[
                 "client_authn_method"
             ]
-        self.allow_refresh = kwargs.get("allow_refresh", True)
 
     def _refresh_access_token(self, req, **kwargs):
         _sdb = self.endpoint_context.sdb
@@ -55,6 +59,9 @@ class TokenCoop(Endpoint):
             )
 
         return by_schema(AccessTokenResponse, **_info)
+
+    def _token_exchange(self, req, **kwargs):
+        raise NotImplementedError
 
     def _access_token(self, req, **kwargs):
         _context = self.endpoint_context
@@ -165,6 +172,14 @@ class TokenCoop(Endpoint):
 
         return request
 
+    def check_grant_type_allowed(self, grant_type):
+        grant_types_supported = self.endpoint_context.provider_info['grant_types_supported']
+        if (
+            grant_type not in self.token_grant_types
+            or grant_type not in grant_types_supported
+        ):
+            raise ProcessError("Invalid grant type")
+
     def _refresh_token_post_parse_request(self, request, client_id="", **kwargs):
         """
         This is where clients come to refresh their access tokens
@@ -196,14 +211,48 @@ class TokenCoop(Endpoint):
 
         return request
 
+    def _token_exchange_post_parse_request(self, request, client_id="", **kwargs):
+        """
+        This is where clients come for token exchange
+
+        :param request: The request
+        :param authn: Authentication info, comes from HTTP header
+        :returns:
+        """
+
+        request = TokenExchangeRequest(**request.to_dict())
+
+        # verify that the request message is correct
+        try:
+            request.verify(keyjar=self.endpoint_context.keyjar)
+        except (MissingRequiredAttribute, ValueError, MissingRequiredValue) as err:
+            return self.error_cls(error="invalid_request", error_description="%s" % err)
+
+        try:
+            keyjar = self.endpoint_context.keyjar
+        except AttributeError:
+            keyjar = ""
+
+        request.verify(keyjar=keyjar, opponent_id=client_id)
+
+        if "client_id" not in request:
+            request["client_id"] = client_id
+
+        logger.debug("%s: %s" % (request.__class__.__name__, sanitize(request)))
+
+        return request
+
     def _post_parse_request(self, request, client_id="", **kwargs):
-        if request["grant_type"] == "authorization_code":
+        grant_type = request["grant_type"]
+        self.check_grant_type_allowed(grant_type)
+        if grant_type == "authorization_code":
             return self._access_token_post_parse_request(request, client_id, **kwargs)
-        else:  # request["grant_type"] == "refresh_token":
-            if self.allow_refresh:
-                return self._refresh_token_post_parse_request(request, client_id, **kwargs)
-            else:
-                raise ProcessError("Refresh Token not allowed")
+        elif grant_type == "refresh_token":
+            return self._refresh_token_post_parse_request(request, client_id, **kwargs)
+        elif grant_type == "urn:ietf:params:oauth:grant-type:token-exchange":
+            return self._token_exchange_post_parse_request(request, client_id, **kwargs)
+        else:
+            raise ProcessError("Invalid grant type")
 
     def process_request(self, request=None, **kwargs):
         """
@@ -214,13 +263,24 @@ class TokenCoop(Endpoint):
         """
         if isinstance(request, self.error_cls):
             return request
+
+        grant_type = request["grant_type"]
         try:
-            if request["grant_type"] == "authorization_code":
+            self.check_grant_type_allowed(grant_type)
+        except ProcessError:
+            return self.error_cls(
+                error="invalid_request", error_description="Wrong grant_type"
+            )
+        try:
+            if grant_type == "authorization_code":
                 logger.debug("Access Token Request")
                 response_args = self._access_token(request, **kwargs)
-            elif request["grant_type"] == "refresh_token":
+            elif grant_type == "refresh_token":
                 logger.debug("Refresh Access Token Request")
                 response_args = self._refresh_access_token(request, **kwargs)
+            elif grant_type == "urn:ietf:params:oauth:grant-type:token-exchange":
+                logger.debug("Token Exchange Request")
+                response_args = self._token_exchange(request, **kwargs)
             else:
                 return self.error_cls(
                     error="invalid_request", error_description="Wrong grant_type"
@@ -230,11 +290,6 @@ class TokenCoop(Endpoint):
 
         if isinstance(response_args, ResponseMessage):
             return response_args
-
-        if request["grant_type"] == "authorization_code":
-            _token = request["code"].replace(" ", "+")
-        else:
-            _token = request["refresh_token"].replace(" ", "+")
 
         _access_token = response_args["access_token"]
         _cookie = new_cookie(
