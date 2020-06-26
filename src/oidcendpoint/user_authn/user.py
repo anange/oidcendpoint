@@ -9,7 +9,6 @@ from urllib.parse import unquote
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptojwt.jwt import JWT
-
 from oidcendpoint import sanitize
 from oidcendpoint.exception import FailedAuthentication
 from oidcendpoint.exception import ImproperlyConfigured
