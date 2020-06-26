@@ -17,6 +17,7 @@ from oidcendpoint.oidc.add_on.pkce import CC_METHOD
 from oidcendpoint.oidc.authorization import Authorization
 from oidcendpoint.oidc.token import AccessToken
 
+
 BASECH = string.ascii_letters + string.digits + "-._~"
 
 KEYDEFS = [

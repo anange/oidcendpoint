@@ -3,6 +3,13 @@ import json
 import logging
 import time
 
+from oidcendpoint import token_handler
+from oidcendpoint.authn_event import AuthnEvent
+from oidcendpoint.exception import MultipleCodeUsage
+from oidcendpoint.token_handler import ExpiredToken
+from oidcendpoint.token_handler import UnknownToken
+from oidcendpoint.token_handler import WrongTokenType
+from oidcendpoint.token_handler import is_expired
 from oidcmsg.exception import MissingParameter
 from oidcmsg.message import OPTIONAL_LIST_OF_STRINGS
 from oidcmsg.message import SINGLE_OPTIONAL_STRING
@@ -12,13 +19,6 @@ from oidcmsg.message import msg_ser
 from oidcmsg.oidc import AuthorizationRequest
 from oidcmsg.time_util import utc_time_sans_frac
 
-from oidcendpoint import token_handler
-from oidcendpoint.authn_event import AuthnEvent
-from oidcendpoint.exception import MultipleCodeUsage
-from oidcendpoint.token_handler import ExpiredToken
-from oidcendpoint.token_handler import UnknownToken
-from oidcendpoint.token_handler import WrongTokenType
-from oidcendpoint.token_handler import is_expired
 
 logger = logging.getLogger(__name__)
 

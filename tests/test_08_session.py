@@ -2,11 +2,7 @@ import os
 import shutil
 import time
 
-from oidcmsg.oidc import AuthorizationRequest
-from oidcmsg.oidc import OpenIDRequest
-from oidcmsg.storage.init import storage_factory
 import pytest
-
 from oidcendpoint import rndstr
 from oidcendpoint import token_handler
 from oidcendpoint.authn_event import create_authn_event
@@ -19,6 +15,9 @@ from oidcendpoint.sso_db import SSODb
 from oidcendpoint.token_handler import WrongTokenType
 from oidcendpoint.user_authn.authn_context import INTERNETPROTOCOLPASSWORD
 from oidcendpoint.user_info import UserInfo
+from oidcmsg.oidc import AuthorizationRequest
+from oidcmsg.oidc import OpenIDRequest
+from oidcmsg.storage.init import storage_factory
 
 __author__ = "rohe0002"
 

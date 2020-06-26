@@ -55,6 +55,7 @@ from oidcendpoint.user_authn.user import UserPassJinja2
 from oidcendpoint.user_info import UserInfo
 from oidcendpoint.util import JSONDictDB
 
+
 KEYDEFS = [
     {"type": "RSA", "key": "", "use": ["sig"]}
     # {"type": "EC", "crv": "P-256", "use": ["sig"]}

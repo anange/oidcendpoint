@@ -4,8 +4,6 @@ import os
 import requests
 from jinja2 import Environment
 from jinja2 import FileSystemLoader
-from oidcmsg.context import OidcContext
-from oidcmsg.oidc import IdToken
 
 from oidcendpoint import authz
 from oidcendpoint import rndstr
@@ -22,6 +20,8 @@ from oidcendpoint.util import allow_refresh_token
 from oidcendpoint.util import build_endpoints
 from oidcendpoint.util import get_http_params
 from oidcendpoint.util import importer
+from oidcmsg.context import OidcContext
+from oidcmsg.oidc import IdToken
 
 logger = logging.getLogger(__name__)
 

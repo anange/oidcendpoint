@@ -4,7 +4,6 @@ from typing import Optional
 
 from cryptojwt import JWT
 from cryptojwt.jws.exception import JWSException
-
 from oidcendpoint.exception import ToOld
 from oidcendpoint.scopes import convert_scopes2claims
 from oidcendpoint.token_handler import Token
