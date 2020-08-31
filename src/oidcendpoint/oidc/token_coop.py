@@ -39,15 +39,17 @@ class EndpointHelper:
         self.config = config
 
     def post_parse_request(self, request, client_id="", **kwargs):
-        """Context specific parsing of the request.
+        """
+        Context specific parsing of the request.
+
         This is done after general request parsing and before processing
         the request.
         """
-        raise NotImplemented()
+        raise NotImplementedError
 
     def process_request(self, req, **kwargs):
         """Acts on a process request."""
-        raise NotImplemented()
+        raise NotImplementedError
 
 
 class AccessToken(EndpointHelper):
@@ -170,9 +172,13 @@ class RefreshToken(EndpointHelper):
 
         # verify that the request message is correct
         try:
-            request.verify(keyjar=self.endpoint.endpoint_context.keyjar, opponent_id=client_id)
+            request.verify(
+                keyjar=self.endpoint.endpoint_context.keyjar, opponent_id=client_id
+            )
         except (MissingRequiredAttribute, ValueError, MissingRequiredValue) as err:
-            return self.endpoint.error_cls(error="invalid_request", error_description="%s" % err)
+            return self.endpoint.error_cls(
+                error="invalid_request", error_description="%s" % err
+            )
 
         if "client_id" not in request:  # Optional for refresh access token request
             request["client_id"] = client_id
@@ -210,9 +216,18 @@ class TokenExchange(EndpointHelper):
 
         # verify that the request message is correct
         try:
-            request.verify(keyjar=self.endpoint.endpoint_context.keyjar, opponent_id=client_id)
-        except (MissingRequiredAttribute, ValueError, MissingRequiredValue, JWKESTException) as err:
-            return self.endpoint.error_cls(error="invalid_request", error_description="%s" % err)
+            request.verify(
+                keyjar=self.endpoint.endpoint_context.keyjar, opponent_id=client_id
+            )
+        except (
+            MissingRequiredAttribute,
+            ValueError,
+            MissingRequiredValue,
+            JWKESTException
+        ) as err:
+            return self.endpoint.error_cls(
+                error="invalid_request", error_description="%s" % err
+            )
 
         if "client_id" not in request:
             request["client_id"] = client_id
@@ -222,7 +237,10 @@ class TokenExchange(EndpointHelper):
         return request
 
     def create_access_token(self, aud, sub, scope):
-        _jwt = JWT(self.endpoint.endpoint_context.keyjar, iss=self.endpoint.endpoint_context.issuer)
+        _jwt = JWT(
+            self.endpoint.endpoint_context.keyjar,
+            iss=self.endpoint.endpoint_context.issuer
+        )
         return _jwt.pack({'sub': sub, 'scope': scope}, aud=aud)
 
     def process_request(self, req, **kwargs):
@@ -237,10 +255,14 @@ class TokenExchange(EndpointHelper):
                                               error_description="Not allowed")
                 # Should probably verify token type too.
                 _info = copy.copy(_resource_policy)
-                if _info['issued_token_type'] == "urn:ietf:params:oauth:token-type:access_token":
+                if (
+                    _info['issued_token_type']
+                    == "urn:ietf:params:oauth:token-type:access_token"
+                ):
                     _aud, _scope = aud_and_scope(req['resource'])
-                    _info['access_token'] = self.create_access_token(_aud, req['client_id'],
-                                                                     _scope[1:])
+                    _info['access_token'] = self.create_access_token(
+                            _aud, req['client_id'], _scope[1:]
+                    )
 
                     _sdb = self.endpoint.endpoint_context.sdb
                     _sdb[_info["access_token"]] = {
@@ -252,7 +274,9 @@ class TokenExchange(EndpointHelper):
 
                 return by_schema(TokenExchangeResponse, **_info)
 
-        return TokenErrorResponse(error="invalid_request", error_description="Not allowed")
+        return TokenErrorResponse(
+            error="invalid_request", error_description="Not allowed"
+        )
 
 
 HELPER_BY_GRANT_TYPE = {
@@ -281,7 +305,6 @@ class TokenCoop(Endpoint):
             self.endpoint_info["token_endpoint_auth_methods_supported"] = kwargs[
                 "client_authn_method"
             ]
-        # self.allow_refresh = False
         if 'grant_types_support' in kwargs:
             _supported = kwargs['grant_types_support']
             self.helper = {}
@@ -322,7 +345,7 @@ class TokenCoop(Endpoint):
             else:
                 return self.error_cls(
                     error="invalid_request",
-                    error_description="Unsupported grant_type {}".format(request["grant_type"])
+                    error_description=f"Unsupported grant_type {request['grant_type']}"
                 )
         except JWEException as err:
             return self.error_cls(error="invalid_request", error_description="%s" % err)
