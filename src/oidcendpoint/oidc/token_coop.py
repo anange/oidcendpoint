@@ -1,6 +1,7 @@
 import logging
 from urllib.parse import urlparse
 
+from cryptojwt.exception import JWKESTException
 from cryptojwt.jwe.exception import JWEException
 from cryptojwt.jws.exception import NoSuitableSigningKeys
 from oidcmsg import oidc
@@ -11,15 +12,19 @@ from oidcmsg.oidc import AccessTokenRequest
 from oidcmsg.oidc import AccessTokenResponse
 from oidcmsg.oidc import RefreshAccessTokenRequest
 from oidcmsg.oidc import TokenErrorResponse
+from oidcmsg.oauth2 import TokenExchangeRequest
+from oidcmsg.oauth2 import TokenExchangeResponse
 from oidcmsg.storage import importer
 
 from oidcendpoint import sanitize
+from oidcendpoint.authn_event import create_authn_event
 from oidcendpoint.cookie import new_cookie
 from oidcendpoint.endpoint import Endpoint
 from oidcendpoint.exception import ProcessError
 from oidcendpoint.token_handler import AccessCodeUsed
 from oidcendpoint.token_handler import ExpiredToken
 from oidcendpoint.userinfo import by_schema
+from oidcendpoint.session import setup_session
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +40,17 @@ class EndpointHelper:
         self.config = config
 
     def post_parse_request(self, request, client_id="", **kwargs):
-        """Context specific parsing of the request.
+        """
+        Context specific parsing of the request.
+
         This is done after general request parsing and before processing
         the request.
         """
-        raise NotImplemented()
+        raise NotImplementedError
 
     def process_request(self, req, **kwargs):
         """Acts on a process request."""
-        raise NotImplemented()
+        raise NotImplementedError
 
 
 class AccessToken(EndpointHelper):
@@ -197,9 +204,164 @@ class RefreshToken(EndpointHelper):
         return by_schema(AccessTokenResponse, **_info)
 
 
+class TokenExchange(EndpointHelper):
+    """Implements Token Exchange a.k.a. RFC8693"""
+
+    def __init__(self, endpoint, config=None):
+        EndpointHelper.__init__(self, endpoint=endpoint, config=config)
+        # TODO: should we even have a policy for the simple use cases?
+        if config is None:
+            self.policy = {}
+        else:
+            self.policy = config.get('policy', {})
+        # TODO: Make this a part of the policy. Note the distinction between
+        # requested_token_type, subject_token_type, actor_token_type, issued_token_type
+        self.token_types_allowed = [
+            "urn:ietf:params:oauth:token-type:access_token",
+            "urn:ietf:params:oauth:token-type:jwt",
+            # "urn:ietf:params:oauth:token-type:id_token",
+            # "urn:ietf:params:oauth:token-type:refresh_token",
+        ]
+
+    def post_parse_request(self, request, client_id="", **kwargs):
+        request = TokenExchangeRequest(**request.to_dict())
+
+        # verify that the request message is correct
+        try:
+            request.verify(
+                keyjar=self.endpoint.endpoint_context.keyjar, opponent_id=client_id
+            )
+        except (
+            MissingRequiredAttribute,
+            ValueError,
+            MissingRequiredValue,
+            JWKESTException,
+        ) as err:
+            return self.endpoint.error_cls(
+                error="invalid_request", error_description="%s" % err
+            )
+
+        if "client_id" not in request:
+            request["client_id"] = client_id
+
+        logger.debug("%s: %s" % (request.__class__.__name__, sanitize(request)))
+
+        return request
+
+    def check_for_errors(self, request):
+        context = self.endpoint.endpoint_context
+        if "resource" in request:
+            iss = urlparse(context.issuer)
+            if any(
+                urlparse(res).netloc != iss.netloc for res in request["resource"]
+            ):
+                return TokenErrorResponse(
+                    error="invalid_target", error_description="Unknown resource"
+                )
+
+        if "audience" in request:
+            if any(
+                aud != context.issuer for aud in request["audience"]
+            ):
+                return TokenErrorResponse(
+                    error="invalid_target", error_description="Unknown audience"
+                )
+
+        # TODO: if requested type is jwt make sure our tokens are jwt
+        if (
+            "requested_token_type" in request
+            and request["requested_token_type"] not in self.token_types_allowed
+        ):
+            return TokenErrorResponse(
+                error="invalid_target",
+                error_description="Unsupported requested token type"
+            )
+
+        if "actor_token" in request or "actor_token_type" in request:
+            return TokenErrorResponse(
+                error="invalid_request", error_description="Actor token not supported"
+            )
+
+        # TODO: also check if the (valid) subject_token matches subject_token_type
+        if request["subject_token_type"] not in self.token_types_allowed:
+            return TokenErrorResponse(
+                error="invalid_request",
+                error_description="Unsupported subject token type",
+            )
+
+    def create_session(self, request):
+        previous_token = request["subject_token"]
+
+        context = self.endpoint.endpoint_context
+        sdb = context.sdb
+
+        token_info = sdb.handler["access_token"].info(previous_token)
+
+        previous_sid = token_info["sid"]
+
+        session_info = sdb[previous_sid]
+
+        user_id = session_info["sub"]
+
+        # TODO: unfortunately create_authz_session requires a state in the request
+        request["state"] = "ugly hack"
+
+        if "scope" not in request:
+            # If scope is not asked we use the previous one
+            request["scope"] = session_info["authn_req"]["scope"]
+
+        client_salt = context.cdb[request["client_id"]].get(
+                "client_salt", "salt"
+        )
+        authn_event = create_authn_event(user_id, client_salt)
+
+        session_id = setup_session(
+            context, request, user_id, authn_event=authn_event
+        )
+
+        session_info = sdb.upgrade_to_token(key=session_id, scope=request["scope"])
+
+        sdb.update(session_id)
+        return session_info
+
+    def token_exchange_response(self, session):
+        response_args = {
+            "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "token_type": session["token_type"],
+            "access_token": session["access_token"],
+            "scope": session["authn_req"]["scope"],
+            "expires_in": session["expires_in"],
+        }
+        return by_schema(TokenExchangeResponse, **response_args)
+
+    def process_request(self, req, **kwargs):
+        # TODO: should we even have a policy for the simple use cases?
+        # client_policy = self.policy.get(req["client_id"]) or self.policy.get("default")
+        # if not client_policy:
+        #     logger.error(
+        #         "TokenExchange policy for client {req['client_id']} or default missing."
+        #     )
+        #     return TokenErrorResponse(
+        #         error="invalid_request", error_description="Not allowed"
+        #     )
+        error = self.check_for_errors(request=req)
+        if error is not None:
+            return error
+
+        _token = req['subject_token']
+        if self.endpoint.endpoint_context.sdb.is_token_valid(_token) is False:
+            return TokenErrorResponse(error="invalid_request",
+                                      error_description="Not allowed")
+
+        new_session = self.create_session(request=req)
+
+        return self.token_exchange_response(session=new_session)
+
+
 HELPER_BY_GRANT_TYPE = {
     "authorization_code": AccessToken,
     "refresh_token": RefreshToken,
+    "urn:ietf:params:oauth:grant-type:token-exchange": TokenExchange,
 }
 
 
