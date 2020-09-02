@@ -7,12 +7,14 @@ from cryptojwt.exception import JWKESTException
 from cryptojwt.jwe.exception import JWEException
 from cryptojwt.jws.exception import NoSuitableSigningKeys
 from oidcendpoint import sanitize
+from oidcendpoint.authn_event import create_authn_event
 from oidcendpoint.cookie import new_cookie
 from oidcendpoint.endpoint import Endpoint
 from oidcendpoint.exception import ProcessError
 from oidcendpoint.token_handler import AccessCodeUsed
 from oidcendpoint.token_handler import ExpiredToken
 from oidcendpoint.userinfo import by_schema
+from oidcendpoint.session import setup_session
 from oidcmsg import oidc
 from oidcmsg.exception import MissingRequiredAttribute
 from oidcmsg.exception import MissingRequiredValue
@@ -206,10 +208,19 @@ class TokenExchange(EndpointHelper):
 
     def __init__(self, endpoint, config=None):
         EndpointHelper.__init__(self, endpoint=endpoint, config=config)
+        # TODO: should we even have a policy for the simple use cases?
         if config is None:
             self.policy = {}
         else:
             self.policy = config.get('policy', {})
+        # TODO: Make this a part of the policy. Note the distinction between
+        # requested_token_type, subject_token_type, actor_token_type, issued_token_type
+        self.token_types_allowed = [
+            "urn:ietf:params:oauth:token-type:access_token",
+            "urn:ietf:params:oauth:token-type:jwt",
+            # "urn:ietf:params:oauth:token-type:id_token",
+            # "urn:ietf:params:oauth:token-type:refresh_token",
+        ]
 
     def post_parse_request(self, request, client_id="", **kwargs):
         request = TokenExchangeRequest(**request.to_dict())
@@ -236,47 +247,111 @@ class TokenExchange(EndpointHelper):
 
         return request
 
-    def create_access_token(self, aud, sub, scope):
-        _jwt = JWT(
-            self.endpoint.endpoint_context.keyjar,
-            iss=self.endpoint.endpoint_context.issuer
+    def check_for_errors(self, request):
+        context = self.endpoint.endpoint_context
+        if "resource" in request:
+            iss = urlparse(context.issuer)
+            if any(
+                urlparse(res).netloc != iss.netloc for res in request["resource"]
+            ):
+                return TokenErrorResponse(
+                    error="invalid_target", error_description="Unknown resource"
+                )
+
+        if "audience" in request:
+            if any(
+                aud != context.issuer for aud in request["audience"]
+            ):
+                return TokenErrorResponse(
+                    error="invalid_target", error_description="Unknown audience"
+                )
+
+        # TODO: if requested type is jwt make sure our tokens are jwt
+        if (
+            "requested_token_type" in request
+            and request["requested_token_type"] not in self.token_types_allowed
+        ):
+            return TokenErrorResponse(
+                error="invalid_target", error_description="Unknown resource"
+            )
+
+        if "actor_token" in request or "actor_token_type" in request:
+            return TokenErrorResponse(
+                error="invalid_request", error_description="Actor token not supported"
+            )
+
+        # TODO: also check if the (valid) subject_token matches subject_token_type
+        if request["subject_token_type"] not in self.token_types_allowed:
+            return TokenErrorResponse(
+                error="invalid_request", error_description="Not allowed"
+            )
+
+    def create_session(self, request):
+        previous_token = request["subject_token"]
+
+        context = self.endpoint.endpoint_context
+        sdb = context.sdb
+
+        token_info = sdb.handler["access_token"].info(previous_token)
+
+        previous_sid = token_info["sid"]
+
+        session_info = sdb[previous_sid]
+
+        user_id = session_info["sub"]
+
+        # TODO: unfortunately create_authz_session requires a state in the request
+        request["state"] = "ugly hack"
+
+        if "scope" not in request:
+            # If scope is not asked we use the previous one
+            request["scope"] = session_info["authn_req"]["scope"]
+
+        client_salt = context.cdb[request["client_id"]].get(
+                "client_salt", "salt"
         )
-        return _jwt.pack({'sub': sub, 'scope': scope}, aud=aud)
+        authn_event = create_authn_event(user_id, client_salt)
+
+        session_id = setup_session(
+            context, request, user_id, authn_event=authn_event
+        )
+
+        session_info = sdb.upgrade_to_token(key=session_id, scope=request["scope"])
+
+        sdb.update(session_id)
+        return session_info
+
+    def token_exchange_response(self, session):
+        response_args = {
+            "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "token_type": session["token_type"],
+            "access_token": session["access_token"],
+            "scope": session["authn_req"]["scope"],
+        }
+        return by_schema(TokenExchangeResponse, **response_args)
 
     def process_request(self, req, **kwargs):
-        _policy = self.policy.get(req['client_id'])
-        if _policy:
-            _resource_policy = _policy.get(req['resource'])
-            if _resource_policy:
-                # Verify that the token is OK
-                _token = req['subject_token']
-                if self.endpoint.endpoint_context.sdb.is_token_valid(_token) is False:
-                    return TokenErrorResponse(error="invalid_request",
-                                              error_description="Not allowed")
-                # Should probably verify token type too.
-                _info = copy.copy(_resource_policy)
-                if (
-                    _info['issued_token_type']
-                    == "urn:ietf:params:oauth:token-type:access_token"
-                ):
-                    _aud, _scope = aud_and_scope(req['resource'])
-                    _info['access_token'] = self.create_access_token(
-                            _aud, req['client_id'], _scope[1:]
-                    )
+        # TODO: should we even have a policy for the simple use cases?
+        # client_policy = self.policy.get(req["client_id"]) or self.policy.get("default")
+        # if not client_policy:
+        #     logger.error(
+        #         "TokenExchange policy for client {req['client_id']} or default missing."
+        #     )
+        #     return TokenErrorResponse(
+        #         error="invalid_request", error_description="Not allowed"
+        #     )
+        error = self.check_for_errors(request=req)
+        if error is not None:
+            return error
 
-                    _sdb = self.endpoint.endpoint_context.sdb
-                    _sdb[_info["access_token"]] = {
-                        "sub": req['client_id'],
-                        "issued_token_type": _info['issued_token_type'],
-                        "scope": _scope[1:],
-                        "aud": _aud
-                    }
+        _token = req['subject_token']
+        if self.endpoint.endpoint_context.sdb.is_token_valid(_token) is False:
+            return TokenErrorResponse(error="invalid_request",
+                                      error_description="Not allowed")
 
-                return by_schema(TokenExchangeResponse, **_info)
+        new_session = self.create_session(request=req)
 
-        return TokenErrorResponse(
-            error="invalid_request", error_description="Not allowed"
-        )
+        return self.token_exchange_response(session=new_session)
 
 
 HELPER_BY_GRANT_TYPE = {
