@@ -17,7 +17,7 @@ from oidcendpoint.oidc import userinfo
 from oidcendpoint.oidc.authorization import Authorization
 from oidcendpoint.oidc.provider_config import ProviderConfiguration
 from oidcendpoint.oidc.registration import Registration
-from oidcendpoint.oidc.token_coop import AccessToken, RefreshToken
+from oidcendpoint.oidc.token_coop import AccessToken, RefreshToken, TokenExchange
 from oidcendpoint.oidc.token_coop import TokenCoop
 from oidcendpoint.session import setup_session
 from oidcendpoint.user_authn.authn_context import INTERNETPROTOCOLPASSWORD
@@ -160,6 +160,9 @@ class TestEndpoint(object):
             "refresh_token": {
                 "class": RefreshToken,
             },
+            "urn:ietf:params:oauth:grant-type:token-exchange": {
+                "class": TokenExchange
+            },
         },
         {},  # Empty dict should work with the default grant types
         {
@@ -176,6 +179,12 @@ class TestEndpoint(object):
         {
             "authorization_code": "default",
             "refresh_token": None,  # This represents a key w/o value in the YAML conf
+            "urn:ietf:params:oauth:grant-type:token-exchange": {
+                "class": TokenExchange,
+                "kwargs": {
+                    "policy": {}
+                },
+            },
         },
     ])
     def test_init_with_grant_types_supported(self, conf, grant_types_supported):
